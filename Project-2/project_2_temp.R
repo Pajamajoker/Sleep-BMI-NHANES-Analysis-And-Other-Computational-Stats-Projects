@@ -1,0 +1,163 @@
+# =============================================
+# Load Necessary Libraries
+# =============================================
+# Load all the required libraries. Install them if not present.
+if (!require("NHANES")) install.packages("NHANES")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("broom")) install.packages("broom")
+library(NHANES)
+library(dplyr)
+library(ggplot2)
+
+# =============================================
+# Function Definitions: Logic Section
+# =============================================
+
+# 1) Function to prepare the dataset.
+# Select specific columns, recode categorical variables as factors, and calculate BMI.
+prepare_data <- function(selected_columns = c("Age", "Gender", "Height", "Weight", 
+                                              "BPSysAve", "BPDiaAve", "Diabetes", "PhysActive", "BMI")) {
+  print("Preparing the data...")
+  NHANES <- NHANES[!duplicated(NHANES$ID), ]
+  
+  df <- NHANES %>%
+    select(all_of(selected_columns)) %>%
+    rename_with(~ c("Age", "Sex", "Height", "Weight", "SBP", "DBP", "Diabetes", "PhysicalActivity", "BMI")) %>%
+    mutate(across(c(Sex, Diabetes, PhysicalActivity), as.factor)) %>%
+    na.omit() # Remove rows with NA values.
+  
+  print("Data preparation complete!")
+  return(df)
+}
+
+# 2) Function to compute descriptive statistics.
+# This calculates summary statistics like mean and SD for numeric variables.
+compute_summary <- function(data) {
+  print("Computing descriptive statistics...")
+  summary <- data %>%
+    summarise(
+      across(where(is.numeric),
+             list(mean = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE)),
+             .names = "{col}_{fn}")
+    )
+  cat("Summary statistics computed!", "\n")
+  print(summary)
+  return(summary)
+}
+
+# 3) Function to fit multiple regression model.
+# Fits a linear model with interaction terms for predictors of SBP.
+fit_model <- function(data) {
+  print("Fitting multiple regression model with interaction terms...")
+  model <- lm(SBP ~ BMI * Age, data = data) # Model includes interaction term.
+  print("Model fitting complete!")
+  return(model)
+}
+
+# 4) Function to generate diagnostic plots for the model.
+# This creates residual vs fitted and Q-Q plots for diagnostics.
+diagnostic_plots <- function(model) {
+  print("Creating diagnostic plots...")
+  
+  # Residuals vs Fitted
+  res_vs_fitted <- ggplot(data = augment(model), aes(.fitted, .resid)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "Residuals vs Fitted", x = "Fitted Values", y = "Residuals") +
+    theme_minimal()
+  
+  # Q-Q Plot
+  qq_plot <- ggplot(data = augment(model), aes(sample = .std.resid)) +
+    stat_qq() +
+    stat_qq_line(color = "red") +
+    labs(title = "Q-Q Plot of Residuals") +
+    theme_minimal()
+  
+  print("Diagnostic plots created!")
+  return(list(res_vs_fitted = res_vs_fitted, qq_plot = qq_plot))
+}
+
+# 5) Function to interpret model results.
+# This gives a summary of the model coefficients and p-values.
+interpret_model <- function(model) {
+  print("Interpreting the model results...")
+  tidy_model <- tidy(model)
+  print("Model coefficients and p-values:")
+  print(tidy_model)
+  return(tidy_model)
+}
+
+# =============================================
+# Execution Section: Task List in Sequence
+# =============================================
+
+# Step 1: Prepare the dataset.
+df <- prepare_data()
+str(df) # Display the structure of the cleaned dataset to verify.
+
+# Step 2: Compute descriptive statistics for the full dataset (Table 1).
+table1 <- compute_summary(df)
+print("Table 1: Descriptive Statistics")
+print(table1)
+
+# Step 3: Fit a multiple regression model to predict SBP using BMI and Age.
+model <- fit_model(df)
+
+# Step 4: Generate diagnostic plots for the regression model.
+# In this step, I generated diagnostic plots (Residuals vs Fitted and Q-Q Plot) for the initial model.
+# The goal was to check if the model assumptions (such as normality of residuals) were met.
+# However, the Q-Q plot revealed that the residuals deviate from normality, indicating potential issues.
+
+diagnostics <- diagnostic_plots(model)
+print("Displaying Diagnostic Plots:")
+print(diagnostics$res_vs_fitted)
+print(diagnostics$qq_plot)
+
+# Step 5: Adding this extra step because I think 
+# To address the normality issue observed in Step 4, I transformed the response variable (SBP) 
+# by taking its logarithm.
+# After fitting the transformed model and generating new diagnostic plots, the Q-Q plot showed slightly
+# improved alignment with normality, indicating that the transformation was meaningful
+# Create a new dataset with log-transformed SBP
+df_transformed <- df %>%
+  mutate(SBP_transformed = log(SBP))
+model_transformed <- lm(SBP_transformed ~ BMI * Age, data = df_transformed) 
+diagnostics_transformed <- diagnostic_plots(model_transformed)
+
+print("Displaying Transformed Model Diagnostic Plots:")
+print(diagnostics_transformed$res_vs_fitted)
+print(diagnostics_transformed$qq_plot)
+
+# Step 6: Interpret the results of the transformed model.
+model_results_transformed <- interpret_model(model_transformed)
+
+# =============================================
+# Conclusion Section
+# =============================================
+#In this analysis, I aimed to understand how BMI and age affect systolic blood pressure (SBP) using the NHANES dataset, which includes health data from people of different ages and backgrounds. I conducted multiple regression analysis, focusing on the interaction between BMI and age, and used diagnostic checks to ensure the model's reliability.
+
+#Data Preparation
+#I selected key variables like age, sex, height, weight, SBP, diastolic blood pressure,
+#diabetes status, and physical activity. Categorical data such as sex and diabetes were
+#converted into factors. I cleaned the dataset by removing rows with missing values for accuracy.
+
+#Descriptive Statistics (Table 1)
+# Basic statistics (mean, standard deviation, sample size) gave an overview of SBP, 
+# BMI, and age. The data showed trends like higher SBP in participants with elevated 
+#BMI.
+
+# Regression Analysis and Diagnostics
+#I built a multiple regression model with an interaction term between BMI and age
+#to predict SBP. Diagnostic plots (residual vs. fitted and Q-Q plots) revealed issues
+#with normality, so I log-transformed SBP to improve the model. The transformed 
+#model showed better results.
+
+#Results and Conclusion
+#The regression results showed that both BMI and age significantly influence SBP. 
+#The interaction term indicated that the effect of BMI on SBP changes with age.
+#These findings highlight the combined impact of weight and age on blood pressure.
+
+#In conclusion, BMI and age are important factors for predicting SBP. 
+#This analysis supports the need for public health measures focused on weight
+#management and age-specific health strategies.

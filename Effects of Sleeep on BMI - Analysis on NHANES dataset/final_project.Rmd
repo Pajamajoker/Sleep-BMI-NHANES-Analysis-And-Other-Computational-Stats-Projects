@@ -1,0 +1,765 @@
+---
+title: "The Impact of Sleep Patterns on Body Mass Index: Study from NHANES Dataset"
+author: "Prathamesh Joshi"
+output: html_document
+---
+
+# Background
+
+Sleep quality has been recognized as a critical component of overall health. Insufficient or poor-quality sleep (e.g., less than 6 hours of sleep, frequent awakenings) has been linked to numerous health issues, including obesity and hypertension. This study focuses on understanding how sleep patterns, including sleep duration, snoring frequency, and daytime sleepiness, relate to Body Mass Index (BMI). By analyzing data from the NHANES dataset, this study aims to provide insights that could contribute to lifestyle interventions and public health strategies aimed at improving sleep cycles and managing health risks associated with poor sleep.
+
+### Data Source
+Data will be extracted from the **National Health and Nutrition Examination Survey (NHANES)**.
+
+### Study Parameters
+The study focuses on adults, using data on sleep patterns (e.g., sleep duration, snoring frequency, daytime sleepiness), BMI, and demographic variables such as age, gender, and ethnicity.
+
+So far, the following parameters have been identified from the NHANES dataset for this analysis:
+
+#### 1. **Sleep Patterns:**
+- **Sleep duration (SLD012)**: Usual sleep time on weekdays
+- **Usual sleep time on weekdays (SLQ300)**
+- **Usual wake time on weekdays (SLQ310)**
+- **Snoring frequency (SLQ030)**
+- **Daytime sleepiness (SLQ120)**
+
+#### 2. **Health Outcomes:**
+- **BMI (BMXBMI)**
+
+#### 3. **Demographic Variables:**
+- **Age (RIDAGEYR)**
+- **Gender (RIAGENDR)**
+- **Ethnicity (RIDRETH1)**
+
+# Study Aims
+
+### Primary Study Aim
+We want to study how sleep patterns (like how long people sleep, how often they snore, and how sleepy they feel during the day) relate to BMI in adults.
+
+### Secondary Study Aims
+- We will check if demographic factors (like age, gender, and ethnicity) affect the link between sleep behaviors and health outcomes.
+- We will look at how often different sleep quality indicators appear in various demographic groups.
+
+# Code Structure
+
+The code used to analyze the NHANES dataset has been broken into two sections to enhance clarity and flow:
+
+### 1. **Function Definitions Section**
+This section contains all the necessary functions that will be used in the code execution section. It’s important for you to review and understand the function definitions, as they provide the foundation for the subsequent analysis.
+
+### 2. **Code Execution Section**
+This is where the actual data analysis takes place. After you have gone through the function definitions, you can scroll down to this section to see how the functions are applied to the data and how the results are derived.
+
+It’s best to scroll through the function definitions and move on to the code execution section to proceed with the report.
+
+
+## 1. **Function Definitions Section**
+```{r function definition section, include=TRUE}
+if (!require(nhanesA)) install.packages("nhanesA")
+if (!require(dplyr)) install.packages("dplyr")
+if (!require(tidyr)) install.packages("tidyr")
+if (!require(lmtest)) install.packages("lmtest")
+if (!require(ggplot2)) install.packages("ggplot2")
+if (!require(car)) install.packages("car")
+if (!require(ggcorrplot)) install.packages("ggcorrplot")
+if (!require(haven)) install.packages("haven") # For reading XPT files
+
+# Load libraries
+library(nhanesA)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggcorrplot)
+library(haven)
+library(lmtest)
+library(car)  # For vif()
+library(gridExtra)
+
+# Function to clean and merge datasets
+clean_data <- function(demo, slq, bmx) {
+  # Merge the datasets by SEQN (Survey Participant ID)
+  merged_data <- demo %>%
+    left_join(slq, by = "SEQN") %>%
+    left_join(bmx, by = "SEQN")
+  
+  # Ensure the columns are present before filtering
+  essential_columns <- c("BMXBMI", "SLD012", "SLQ030", "SLQ120", "SLQ310", "SLQ300")
+  missing_columns <- setdiff(essential_columns, names(merged_data))
+  
+  if(length(missing_columns) > 0) {
+    stop(paste("Missing columns:", paste(missing_columns, collapse = ", ")))
+  }
+  
+  # Clean the data: remove rows with missing essential values
+  cleaned_data <- merged_data %>%
+    filter(!is.na(BMXBMI), !is.na(SLD012), !is.na(SLQ030), !is.na(SLQ120), !is.na(SLQ310), !is.na(SLQ300)) %>%
+    dplyr::select(SEQN, RIDAGEYR, RIAGENDR, RIDRETH1, SLD012, SLQ030, SLQ120, SLQ310, SLQ300, BMXBMI) %>%
+    # Convert categorical variables to factors
+    mutate(
+      RIAGENDR = factor(RIAGENDR, levels = c(1, 2), labels = c("Male", "Female")),
+      RIDRETH1 = factor(RIDRETH1, levels = c(1, 2, 3, 4, 5), 
+                        labels = c("Non-Hispanic White", "Non-Hispanic Black", "Mexican American", 
+                                   "Other Hispanic", "Other Race")),
+      SLD012 = as.numeric(SLD012),  # Keep SLD012 as numeric for sleep hours
+      
+      # SLQ030 - How often do you snore?
+      SLQ030 = factor(SLQ030, levels = c(0, 1, 2, 3, 7, 9), labels = c("Never", "Rarely - 1-2 nights a week", 
+                                                                       "Occasionally - 3-4 nights a week", 
+                                                                       "Frequently - 5 or more nights a week", 
+                                                                       "Refused", "Don't know")),
+      
+      # SLQ120 - How often feel overly sleepy during day?
+      SLQ120 = factor(SLQ120, levels = c(0, 1, 2, 3, 4, 7, 9), labels = c("Never", "Rarely - 1 time a month", 
+                                                                          "Sometimes - 2-4 times a month", 
+                                                                          "Often - 5-15 times a month", 
+                                                                          "Almost always - 16-30 times a month", 
+                                                                          "Refused", "Don't know")),
+      
+      SLQ310 = as.character(SLQ310),  # Treat SLQ310 as a character variable ('HH:MM')
+      SLQ300 = as.character(SLQ300),  # Treat SLQ300 as a character variable ('HH:MM')
+      
+      # Validate time format for SLQ310 and SLQ300
+      SLQ310 = ifelse(grepl("^\\d{2}:\\d{2}$", SLQ310), SLQ310, NA),
+      SLQ300 = ifelse(grepl("^\\d{2}:\\d{2}$", SLQ300), SLQ300, NA),
+      
+      # Assign sleep categories based on SLQ300 (sleep time) and SLQ310 (wake time)
+      SLQ300_category = factor(
+        case_when(
+          as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) >= 19 * 60 & as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) < 21 * 60 ~ "SLEPT EARLY",
+          as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) >= 21 * 60 & as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) < 23 * 60 ~ "SLEPT ON TIME",
+          as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) >= 23 * 60 | as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) < 1 * 60 ~ "SLEPT LATE",  # Between 23:00 and 01:00
+          as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) >= 1 * 60 & as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) < 3 * 60 ~ "SLEPT VERY LATE",
+          as.numeric(substr(SLQ300, 1, 2)) * 60 + as.numeric(substr(SLQ300, 4, 5)) >= 3 * 60 ~ "SLEPT AT OTHER TIME",
+          TRUE ~ "NA"
+        ),
+        levels = c("SLEPT EARLY", "SLEPT ON TIME", "SLEPT LATE", "SLEPT VERY LATE", "SLEPT AT OTHER TIME")
+      ),
+      
+      SLQ310_category = factor(
+        case_when(
+          as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) >= 4 * 60 & as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) < 6 * 60 ~ "WOKE UP EARLY",
+          as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) >= 6 * 60 & as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) < 8 * 60 ~ "WOKE UP ON TIME",
+          as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) >= 8 * 60 & as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) < 10 * 60 ~ "WOKE UP LATE",
+          as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) >= 10 * 60 & as.numeric(substr(SLQ310, 1, 2)) * 60 + as.numeric(substr(SLQ310, 4, 5)) < 12 * 60 ~ "WOKE UP VERY LATE",
+          TRUE ~ "WOKE UP AT OTHER TIMES"
+        ),
+        levels = c("WOKE UP EARLY", "WOKE UP ON TIME", "WOKE UP LATE", "WOKE UP VERY LATE", "WOKE UP AT OTHER TIMES")
+      )
+    ) %>%
+    
+    # Optional: Additional cleaning - Remove rows with missing 'BMXBMI' values
+    filter(!is.na(BMXBMI))
+  
+  return(cleaned_data)
+}
+
+# Function to calculate descriptive statistics for cleaned data
+descriptive_stats <- function(cleaned_data) {
+  # Descriptive statistics for numerical variables
+  numeric_vars <- cleaned_data %>%
+    select(where(is.numeric))
+  
+  numeric_stats <- numeric_vars %>%
+    summarise(across(everything(), list(
+      mean = ~mean(. , na.rm = TRUE),
+      sd = ~sd(. , na.rm = TRUE),
+      min = ~min(. , na.rm = TRUE),
+      max = ~max(. , na.rm = TRUE)
+    )))
+  
+  # Descriptive statistics for categorical variables
+  categorical_vars <- cleaned_data %>%
+    select(where(is.factor) | where(is.character))
+  
+  categorical_stats <- categorical_vars %>%
+    summarise(across(everything(), ~{
+      counts <- table(.)
+      paste(names(counts), counts, sep = ": ", collapse = ", ")
+    }))
+  
+  # Combine both numeric and categorical stats
+  stats <- list(
+    numeric = numeric_stats,
+    categorical = categorical_stats
+  )
+  
+  return(stats)
+}
+
+# Correlation Analysis Function
+correlation_analysis <- function(cleaned_data) {
+  # Select only numerical columns for correlation analysis (excluding SEQN)
+  numeric_vars <- cleaned_data %>%
+    select(where(is.numeric)) %>%
+    select(-SEQN)  # Exclude SEQN from correlation analysis
+  
+  # Compute the correlation matrix
+  correlation_matrix <- cor(numeric_vars, use = "complete.obs", method = "pearson")
+  
+  # Return the correlation matrix
+  return(correlation_matrix)
+}
+
+# Function for multiple linear regression
+regression_analysis <- function(cleaned_data) {
+  
+  # Create the regression model
+  model <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + RIDAGEYR + RIAGENDR, data = cleaned_data)
+  
+  # Summary of the model
+  model_summary <- summary(model)
+  # Step 2: Visualize Residuals
+  # 1) Residuals vs Fitted plot
+  residuals_plot <- ggplot(data = data.frame(fitted = model$fitted.values, residuals = model$residuals), 
+                           aes(x = fitted, y = residuals)) + 
+    geom_point() + 
+    geom_smooth(method = "loess", se = FALSE, color = "blue") +  # Loess smooth line
+    labs(title = "Residuals vs Fitted", x = "Fitted Values", y = "Residuals") +
+    theme_minimal()
+  
+  # 2) Q-Q Plot of residuals
+  qq_plot <- ggplot(data = data.frame(residuals = model$residuals), aes(sample = residuals)) +
+    stat_qq() +
+    stat_qq_line() +
+    labs(title = "Q-Q Plot of Residuals") +
+    theme_minimal()
+  
+  # 3) Fitted Values vs sqrt(Standardized Residuals)
+  standardized_residuals <- rstandard(model)
+  sqrt_standardized_residuals <- sqrt(abs(standardized_residuals))
+  
+  fitted_vs_sqrt_residuals_plot <- ggplot(data = data.frame(fitted = model$fitted.values, sqrt_residuals = sqrt_standardized_residuals), 
+                                          aes(x = fitted, y = sqrt_residuals)) + 
+    geom_point() + 
+    geom_smooth(method = "loess", se = FALSE, color = "blue") +  # Loess smooth line
+    labs(title = "Fitted Values vs Sqrt(Standardized Residuals)", x = "Fitted Values", y = "Sqrt(Standardized Residuals)") +
+    theme_minimal()
+  
+  # 4) Leverage vs Standardized Residuals plot
+  leverage_values <- hatvalues(model)
+  leverage_vs_residuals_plot <- ggplot(data = data.frame(leverage = leverage_values, standardized_residuals = standardized_residuals), 
+                                       aes(x = leverage, y = standardized_residuals)) + 
+    geom_point() + 
+    geom_smooth(method = "loess", se = FALSE, color = "blue") +  # Loess smooth line
+    labs(title = "Leverage vs Standardized Residuals", x = "Leverage", y = "Standardized Residuals") +
+    theme_minimal()
+  
+  # Step 3: Check for Multicollinearity (Variance Inflation Factor)
+  vif_values <- vif(model)
+  
+  # Display VIF values
+  print("Variance Inflation Factor (VIF) values:")
+  print(vif_values)
+  
+  # Return model summary and diagnostics
+  return(list(
+    model_summary = model_summary,
+    residuals_plot = residuals_plot,
+    qq_plot = qq_plot,
+    fitted_vs_sqrt_residuals_plot = fitted_vs_sqrt_residuals_plot,
+    leverage_vs_residuals_plot = leverage_vs_residuals_plot,
+    vif_values = vif_values
+  ))
+}
+
+# Function for advanced intereaction effect analysis
+# I am truncating this for Rmd for formating purpises, since the code is a little long, Please refer to the 
+# attached .R file for complete code
+```
+
+```{r function definition section adv, include=FALSE}
+
+advanced_regression_analysis <- function(cleaned_data) {
+  
+  # Create the regression model with interaction effects
+  model_interaction <- lm(BMXBMI ~ SLD012 * SLQ030 * SLQ120 * RIDAGEYR * RIAGENDR, data = cleaned_data)
+  
+  # Summary of the model
+  model_summary <- summary(model_interaction)
+  
+  # Step 2: Visualize Residuals
+  # 1) Residuals vs Fitted plot
+  residuals_plot <- ggplot(data = data.frame(fitted = model_interaction$fitted.values, residuals = model_interaction$residuals), 
+                           aes(x = fitted, y = residuals)) + 
+    geom_point() + 
+    geom_smooth(method = "loess", se = FALSE, color = "blue") +  # Loess smooth line
+    labs(title = "Residuals vs Fitted (Interaction Model)", x = "Fitted Values", y = "Residuals") +
+    theme_minimal()
+  
+  # 2) Q-Q Plot of residuals
+  qq_plot <- ggplot(data = data.frame(residuals = model_interaction$residuals), aes(sample = residuals)) +
+    stat_qq() +
+    stat_qq_line() +
+    labs(title = "Q-Q Plot of Residuals (Interaction Model)") +
+    theme_minimal()
+  
+  # 3) Fitted Values vs sqrt(Standardized Residuals)
+  standardized_residuals <- rstandard(model_interaction)
+  sqrt_standardized_residuals <- sqrt(abs(standardized_residuals))
+  
+  fitted_vs_sqrt_residuals_plot <- ggplot(data = data.frame(fitted = model_interaction$fitted.values, sqrt_residuals = sqrt_standardized_residuals), 
+                                          aes(x = fitted, y = sqrt_residuals)) + 
+    geom_point() + 
+    geom_smooth(method = "loess", se = FALSE, color = "blue") +  # Loess smooth line
+    labs(title = "Fitted Values vs Sqrt(Standardized Residuals) (Interaction Model)", 
+         x = "Fitted Values", y = "Sqrt(Standardized Residuals)") +
+    theme_minimal()
+  
+  # 4) Leverage vs Standardized Residuals plot
+  leverage_values <- hatvalues(model_interaction)
+  leverage_vs_residuals_plot <- ggplot(data = data.frame(leverage = leverage_values, standardized_residuals = standardized_residuals), 
+                                       aes(x = leverage, y = standardized_residuals)) + 
+    geom_point() + 
+    geom_smooth(method = "loess", se = FALSE, color = "blue") +  # Loess smooth line
+    labs(title = "Leverage vs Standardized Residuals (Interaction Model)", 
+         x = "Leverage", y = "Standardized Residuals") +
+    theme_minimal()
+  
+  # Return model summary and diagnostics
+  return(list(
+    model_summary = model_summary,
+    residuals_plot = residuals_plot,
+    qq_plot = qq_plot,
+    fitted_vs_sqrt_residuals_plot = fitted_vs_sqrt_residuals_plot,
+    leverage_vs_residuals_plot = leverage_vs_residuals_plot
+  ))
+}
+
+# Function for subgroup analysis
+subgroup_analysis <- function(cleaned_data) {
+  # Create Age Group categories
+  cleaned_data$age_group <- cut(cleaned_data$RIDAGEYR,
+                                breaks = c(18, 29, 44, 59, Inf),
+                                labels = c("18-29", "30-44", "45-59", "60+"),
+                                right = FALSE)
+  
+  # Create Sleep Duration categories
+  cleaned_data$sl_sleep_group <- cut(cleaned_data$SLD012, 
+                                     breaks = c(0, 5, 7, 9, Inf), 
+                                     labels = c("<5 hours", "5-7 hours", "7-9 hours", ">9 hours"),
+                                     right = FALSE)
+  
+  # Run Regression by Age Group
+  age_group_regression <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + SLQ300_category + SLQ310_category + age_group, data = cleaned_data)
+  age_group_summary <- summary(age_group_regression)
+  
+  # Run Regression by Gender
+  gender_regression <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + SLQ300_category + SLQ310_category + RIAGENDR, data = cleaned_data)
+  gender_summary <- summary(gender_regression)
+  
+  # Run Regression by Ethnicity
+  ethnicity_regression <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + SLQ300_category + SLQ310_category + RIDRETH1, data = cleaned_data)
+  ethnicity_summary <- summary(ethnicity_regression)
+  
+  # Run Regression by Sleep Duration Group
+  sleep_duration_regression <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + SLQ300_category + SLQ310_category + sl_sleep_group, data = cleaned_data)
+  sleep_duration_summary <- summary(sleep_duration_regression)
+  
+  # Run Regression by Snoring Frequency
+  snoring_regression <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + SLQ300_category + SLQ310_category + SLQ030, data = cleaned_data)
+  snoring_summary <- summary(snoring_regression)
+  
+  # Run Regression by Daytime Sleepiness
+  sleepiness_regression <- lm(BMXBMI ~ SLD012 + SLQ030 + SLQ120 + SLQ300_category + SLQ310_category + SLQ120, data = cleaned_data)
+  sleepiness_summary <- summary(sleepiness_regression)
+  
+  # Collect all summaries
+  regression_summaries <- list(
+    age_group = age_group_summary,
+    gender = gender_summary,
+    ethnicity = ethnicity_summary,
+    sleep_duration = sleep_duration_summary,
+    snoring = snoring_summary,
+    sleepiness = sleepiness_summary
+  )
+  
+  # Generate Plots for each subgroup
+  plot_age_group <- ggplot(cleaned_data, aes(x = age_group, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Age Group")
+  
+  plot_gender <- ggplot(cleaned_data, aes(x = RIAGENDR, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Gender")
+  
+  plot_ethnicity <- ggplot(cleaned_data, aes(x = RIDRETH1, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Ethnicity")
+  
+  plot_sleep_duration <- ggplot(cleaned_data, aes(x = sl_sleep_group, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Sleep Duration")
+  
+  plot_snoring <- ggplot(cleaned_data, aes(x = SLQ030, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Snoring Frequency")
+  
+  plot_sleepiness <- ggplot(cleaned_data, aes(x = SLQ120, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Daytime Sleepiness")
+  
+  # Store the plots
+  plots <- list(
+    age_group = plot_age_group,
+    gender = plot_gender,
+    ethnicity = plot_ethnicity,
+    sleep_duration = plot_sleep_duration,
+    snoring = plot_snoring,
+    sleepiness = plot_sleepiness
+  )
+  
+  return(list(regression_summaries = regression_summaries, plots = plots))
+}
+
+regression_line_plots <- function(cleaned_data) {
+  # Create Age Group categories
+  cleaned_data$age_group <- cut(cleaned_data$RIDAGEYR,
+                                breaks = c(18, 29, 44, 59, Inf),
+                                labels = c("18-29", "30-44", "45-59", "60+"),
+                                right = FALSE)
+  
+  # Create Regression Line Plot for Age Groups
+  age_group_regression <- lm(BMXBMI ~ SLD012 * age_group, data = cleaned_data)
+  age_group_summary <- summary(age_group_regression)
+  
+  plot_bmi_sleep_age <- ggplot(cleaned_data, aes(x = SLD012, y = BMXBMI, color = age_group)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE) +
+    labs(title = "Regression of BMI vs Sleep Duration by Age Group",
+         x = "Sleep Duration (Hours)", y = "BMI") +
+    theme_minimal()
+  
+  # Create Regression Line Plot for Race/Ethnicity
+  ethnicity_regression <- lm(BMXBMI ~ SLD012 * factor(RIDRETH1), data = cleaned_data)
+  ethnicity_summary <- summary(ethnicity_regression)
+  
+  plot_bmi_sleep_race <- ggplot(cleaned_data, aes(x = SLD012, y = BMXBMI, color = factor(RIDRETH1))) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE) +
+    labs(title = "Regression of BMI vs Sleep Duration by Race/Ethnicity",
+         x = "Sleep Duration (Hours)", y = "BMI", color = "Race/Ethnicity") +
+    theme_minimal()
+  
+  # Return the plots and summaries
+  return(list(
+    plots = list(
+      plot_bmi_sleep_age = plot_bmi_sleep_age,
+      plot_bmi_sleep_race = plot_bmi_sleep_race
+    ),
+    summaries = list(
+      age_group_summary = age_group_summary,
+      ethnicity_summary = ethnicity_summary
+    )
+  ))
+}
+
+subgroup_boxplots <- function(cleaned_data) {
+  # Create Age Group categories
+  cleaned_data$age_group <- cut(cleaned_data$RIDAGEYR,
+                                breaks = c(18, 29, 44, 59, Inf),
+                                labels = c("18-29", "30-44", "45-59", "60+"),
+                                right = FALSE)
+  
+  # Create Sleep Duration categories
+  cleaned_data$sl_sleep_group <- cut(cleaned_data$SLD012, 
+                                     breaks = c(0, 5, 7, 9, Inf), 
+                                     labels = c("<5 hours", "5-7 hours", "7-9 hours", ">9 hours"),
+                                     right = FALSE)
+  
+  # Generate Boxplots for each subgroup
+  plot_age_group <- ggplot(cleaned_data, aes(x = age_group, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Age Group")
+  
+  plot_gender <- ggplot(cleaned_data, aes(x = factor(RIAGENDR), y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Gender", x = "Gender")
+  
+  plot_ethnicity <- ggplot(cleaned_data, aes(x = factor(RIDRETH1), y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Ethnicity", x = "Race/Ethnicity")
+  
+  plot_sleep_duration <- ggplot(cleaned_data, aes(x = sl_sleep_group, y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Sleep Duration", x = "Sleep Duration Group")
+  
+  plot_snoring <- ggplot(cleaned_data, aes(x = factor(SLQ030), y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Snoring Frequency", x = "Snoring Frequency")
+  
+  plot_sleepiness <- ggplot(cleaned_data, aes(x = factor(SLQ120), y = BMXBMI)) +
+    geom_boxplot() +
+    labs(title = "BMI by Daytime Sleepiness", x = "Daytime Sleepiness")
+  
+  # Regression summaries for each subgroup
+  age_group_summary <- summary(lm(BMXBMI ~ age_group, data = cleaned_data))
+  gender_summary <- summary(lm(BMXBMI ~ factor(RIAGENDR), data = cleaned_data))
+  ethnicity_summary <- summary(lm(BMXBMI ~ factor(RIDRETH1), data = cleaned_data))
+  sleep_duration_summary <- summary(lm(BMXBMI ~ sl_sleep_group, data = cleaned_data))
+  snoring_summary <- summary(lm(BMXBMI ~ factor(SLQ030), data = cleaned_data))
+  sleepiness_summary <- summary(lm(BMXBMI ~ factor(SLQ120), data = cleaned_data))
+  
+  # Store the plots
+  plots <- list(
+    age_group = plot_age_group,
+    gender = plot_gender,
+    ethnicity = plot_ethnicity,
+    sleep_duration = plot_sleep_duration,
+    snoring = plot_snoring,
+    sleepiness = plot_sleepiness
+  )
+  
+  # Store the summaries
+  summaries <- list(
+    age_group_summary = age_group_summary,
+    gender_summary = gender_summary,
+    ethnicity_summary = ethnicity_summary,
+    sleep_duration_summary = sleep_duration_summary,
+    snoring_summary = snoring_summary,
+    sleepiness_summary = sleepiness_summary
+  )
+  
+  return(list(
+    plots = plots,
+    summaries = summaries
+  ))
+}
+```
+
+
+## 2. **Function Execution Section**
+
+### Step 1: Load the Datasets
+
+I started by loading the three datasets: `DEMO_I.XPT`, `SLQ_I.XPT`, and `BMX_I.XPT`. These datasets contain different types of information about survey participants.
+```{r function execution section, include=TRUE}
+
+# Step 1: Load the datasets
+demo <- read_xpt("/Users/pratham/project_aston/fall_2024/CSnP/DEMO_I.XPT")
+slq <- read_xpt("/Users/pratham/project_aston/fall_2024/CSnP/SLQ_I.XPT")
+bmx <- read_xpt("/Users/pratham/project_aston/fall_2024/CSnP/BMX_I.XPT")
+```
+
+### Step 2: Clean and Merge the Data
+Next, I cleaned and merge the data into one dataset using the clean_data() function. This function does several important things:
+
+### 2.1 Merging the Datasets
+### 2.2 Checking for Missing Columns
+### 2.3 Filtering Out Missing Values
+### 2.4 Converting Variables to Factors
+### 2.5 Cleaning Time Data and Assigning Categories
+
+So basically in this function I have cleaned the data to ensure it was complete, removing any rows with missing values for essential variables and ensuring the data types were correctly formatted. This allows for accurate analysis and avoids errors during computation.
+```{r function execution section ctd, include=TRUE}
+
+# Step 2: Clean and merge the data
+cleaned_data <- clean_data(demo, slq, bmx)
+```
+
+### Step 3) Descriptive Statistics
+In this step, I calculated the descriptive statistics for both numerical and categorical variables in the cleaned data. This helps summarize key measures like mean, standard deviation, minimum, and maximum for numerical data, and frequency distributions for categorical data, providing a quick overview of the dataset.
+
+Taking a look at it I can see the summary of the cleaned data reveals a diverse dataset with a range of ages (16 to 80 years) and BMI values (14.5 to 67.3). It shows a near-equal distribution of genders, with the majority identifying as either non-Hispanic White or Mexican American, and provides detailed distributions for sleep-related variables, with varying frequencies of sleep and wake times.
+
+```{r function execution section ctd ctd ctd, include=TRUE}
+# Step 3: Descriptive statistics for BMI
+stats <- descriptive_stats(cleaned_data)
+print("Descriptive Statistics for BMI:")
+print(stats)
+print(summary(cleaned_data))
+```
+
+### Step 4) Correlation Analysis
+The correlation analysis was performed to explore the relationships between sleep patterns and BMI. By calculating the correlation matrix, I can identify any potential linear associations between variables like age, sleep duration (SLD012), and BMI (BMXBMI).
+
+The correlation matrix shows a weak positive correlation (0.10) between age (RIDAGEYR) and BMI (BMXBMI), indicating a slight increase in BMI with age. Sleep duration (SLD012) shows weak negative correlations with both age and BMI, suggesting that sleep duration has minimal impact on these variables in this dataset.
+
+This is just how I got started because I had a lot of categorical variables related to sleep as well where in we might actually see some fruitful results
+
+```{r function execution section ctd ctd, include=TRUE}
+
+# Step 4: Correlation analysis to check relationships between sleep patterns and BMI
+cor_matrix <- correlation_analysis(cleaned_data)
+print("Correlation Matrix:")
+print(cor_matrix)
+
+# Plot heatmap of correlation matrix with enhancements
+ggcorrplot(cor_matrix, 
+           method = "circle",        # Circle method for visualization
+           type = "lower",           # Only plot the lower triangle of the matrix
+           lab = TRUE,               # Show correlation values inside the circles
+           lab_size = 4,             # Adjust label size for readability
+           colors = c("blue", "white", "red"),  # Custom color palette for correlation values
+           ggtheme = theme_minimal(),  # Minimal theme for a clean look
+           outline.col = "white") +   # White outline around circles for clarity
+  ggtitle("Correlation Matrix of Sleep and BMI Variables") +  # Title for the plot
+  theme(plot.title = element_text(size = 14, hjust = 0.5))  # Title size and centering
+```
+
+```{r regression result, include=TRUE}
+options(max.print=15)
+# Step 5: Multiple linear regression to see the effect of sleep patterns on BMI
+regression_result <- regression_analysis(cleaned_data)
+```
+### Stp 5) Multi-Linear Regression (simple)
+ I did a multiple linear regression to check how sleep patterns and other factors like age and gender affect BMI. This helps understand which factors are more important when it comes to BMI.
+
+### Explanation of Output:
+### Model Summary:
+The regression model shows that sleep frequency (SLQ030), sleep timing (SLQ120), age (RIDAGEYR), and gender (RIAGENDR) all have a significant effect on BMI. For example, if sleep is more frequent (like 5 or more nights a week), BMI tends to be higher. Age and gender also affect BMI, with age slightly increasing BMI and females having a higher BMI than males. The p-value is really low, so the model is statistically significant. But, the R-squared value of 0.1046 means the model only explains about 10.5% of BMI variation, which is not a lot.
+
+### VIF:
+The VIF values are all close to 1, which means there's no multicollinearity. In simple terms, the predictor variables aren’t overlapping or causing issues in the model.
+
+### Residuals and Plots:
+The residuals plot and Q-Q plot help check if the model’s assumptions are met. They show if there's any bias or if the data isn’t fitting the model properly.
+
+### Key Point:
+The regression tells us that sleep habits, age, and gender play a role in BMI. But the model isn’t explaining much of the variability in BMI (just 10.5%). Still, the sleep patterns and other factors are significant enough to notice, and we should look into them further.
+
+```{r regression result display, include=TRUE}
+# Print the model summary, residuals plot, and VIF values
+print(regression_result$model_summary)
+print(regression_result$vif_values)
+
+grid.arrange(regression_result$residuals_plot, 
+             regression_result$qq_plot, 
+             regression_result$fitted_vs_sqrt_residuals_plot, 
+             regression_result$leverage_vs_residuals_plot, ncol = 2)
+```
+
+### Step 6) Advanced Multi-Linear Regression Analysis
+I did an advanced regression to check for interaction effects between the variables. This helps us understand if the effect of one variable on BMI depends on another variable, like how sleep patterns might change based on age or gender.
+
+### Explanation of Output:
+### Model Summary:
+The advanced regression model shows the relationship between BMI and various predictors, considering interaction effects. The multiple R-squared is 0.1483, meaning about 14.8% of the variability in BMI is explained by the model. The adjusted R-squared (0.1178) is a bit lower, showing that after adjusting for the number of predictors, the model still doesn't explain much. The p-value is very small (< 2.2e-16), meaning the model as a whole is statistically significant.
+
+### Residuals and Plots:
+The residuals plot, Q-Q plot, and other diagnostic plots help check if the model's assumptions hold true. These plots look at if there’s any pattern left in the residuals, which can indicate issues with the model fit.
+
+### Key Point:
+The advanced regression model shows significant interaction effects, but like the previous one, it doesn’t explain a large portion of BMI variability. The model is statistically significant
+
+```{r adv reg result, include=TRUE}
+
+# Step 6: Advanced Interaction effects tested
+adv_regression_result <- advanced_regression_analysis(cleaned_data)
+
+# Print the model summary, residuals plot, and VIF values
+print(adv_regression_result$model_summary)
+
+grid.arrange(adv_regression_result$residuals_plot, 
+             adv_regression_result$qq_plot, 
+             adv_regression_result$fitted_vs_sqrt_residuals_plot, 
+             adv_regression_result$leverage_vs_residuals_plot, ncol = 2)
+```
+
+### Step 7) Subgroup Analysis
+In this step, I did a subgroup analysis to see how demographic factors (like sleep duration, snoring, and sleepiness) affect the relationship between sleep patterns and BMI. The idea is to break down the data by categories and see how these factors interact with BMI.
+
+### Explanation of Output:
+### Regression Line Plot:
+The plot plot_bmi_sleep_age shows how BMI changes with sleep duration and age. This helps visualize the relationship between sleep and BMI in different age groups.
+
+### Key Point:
+In this step, demographic factors like snoring and sleepiness have a more significant effect on BMI than sleep duration. Although these variables show statistically significant relationships, the amount of variability in BMI they explain is still quite small. There may be other factors not included in the model that are affecting BMI more strongly. This analysis suggests that while sleep patterns do influence BMI, the impact is modest and may need further exploration with additional variables or different analysis methods.
+
+```{r regression result display ctd, include=TRUE}
+# Step 7: Subgroup analysis to see how demographic factors influence the relationship
+#result <- subgroup_analysis(cleaned_data)
+# Call the regression line plots function
+# Call the regression line plots function
+regression_results <- regression_line_plots(cleaned_data)
+
+# Print the plots
+print(regression_results$plots$plot_bmi_sleep_age)
+print(regression_results$plots$plot_bmi_sleep_race)
+
+# Print the summaries
+print(regression_results$summaries$age_group_summary)
+print(regression_results$summaries$ethnicity_summary)
+
+# Call the boxplots function
+boxplot_results <- subgroup_boxplots(cleaned_data)
+
+# Print the plots
+```
+### Boxplot Summaries for Sleep Duration:
+The regression model shows that sleep duration (grouped by hours) has a small effect on BMI. The p-value for the sleep duration groups (5-7 hours, 7-9 hours) is higher than 0.05, indicating that these groups do not significantly affect BMI. The multiple R-squared value is very low (0.004628), suggesting that sleep duration doesn't explain much of the variation in BMI. The F-statistic and p-value show that the model is significant, but the actual effect size is very small.
+
+```{r bp1, include=TRUE}
+print(boxplot_results$plots$sleep_duration)
+```
+
+### Boxplot Summaries for Snoring:
+The analysis of snoring (grouped by frequency of snoring nights) shows that snoring is more significant. The estimates for groups like "Rarely - 1-2 nights a week" and "Occasionally - 3-4 nights a week" have p-values well below 0.05, indicating these categories significantly affect BMI. The R-squared (0.07946) is slightly better here, suggesting snoring explains a bit more of the variability in BMI.
+
+```{r bp2, include=TRUE}
+print(boxplot_results$plots$snoring)
+```
+
+### Boxplot Summaries for Sleepiness:
+The sleepiness groups show a similar pattern. "Rarely - 1 time a month" and "Sometimes - 2-4 times a month" have significant effects on BMI, with very low p-values. The R-squared (0.01565) is still low, but the p-values indicate a statistically significant relationship between sleepiness and BMI.
+
+```{r bp3, include=TRUE}
+print(boxplot_results$plots$sleepiness)
+```
+
+```{r bp summaries, include=TRUE}
+# Print the summaries
+print(boxplot_results$summaries$sleep_duration_summary)
+print(boxplot_results$summaries$snoring_summary)
+print(boxplot_results$summaries$sleepiness_summary)
+```
+
+
+## Summary Analysis of this study
+This analysis explores the relationship between sleep patterns—such as sleep duration, snoring frequency, and daytime sleepiness—and key health measures like Body Mass Index (BMI) in adults. The goal was to uncover connections between these sleep behaviors and BMI, as well as how demographic factors such as age, gender, and ethnicity might affect these relationships.
+
+### Primary Study Aim
+The main aim of this study was to understand how sleep patterns correlate with BMI. Through our analysis, I examined variables like sleep duration, snoring, and daytime sleepiness in relation to BMI. Several steps were involved in this process:
+
+Data Loading and Cleaning: I first loaded and cleaned datasets related to demographic information, sleep quality, and BMI. This included merging data from the DEMO, SLQ, and BMX files to ensure a clean dataset for analysis.
+
+Descriptive Statistics for BMI: I computed and reviewed basic statistics for BMI in the population, showing the mean, median, and range for BMI.
+
+Correlation Analysis: A correlation analysis revealed moderate relationships between sleep patterns (such as sleep duration, snoring frequency, and daytime sleepiness) and BMI. The correlation matrix was visualized using a heatmap, providing useful insights.
+
+Multiple Linear Regression: A regression model assessed how sleep patterns affect BMI. The results indicated that snoring and sleep duration had moderate associations with BMI, while daytime sleepiness did not significantly influence BMI. Although the regression model explained only a small portion of the variability in BMI (R-squared of 0.004), the insights remain valuable.
+
+### Secondary Study Aim
+The secondary objective was to explore how demographic factors like age, gender, and ethnicity influence the relationships between sleep behaviors and health outcomes. Subgroup analysis revealed that these demographic factors interact with the primary sleep metrics.
+
+Subgroup Analysis: Regression line plots showed that age and ethnicity influence the relationship between sleep patterns and BMI. Significant variations were observed across different demographic groups.
+
+Boxplots and Summaries: Boxplots visualized differences in sleep duration, snoring frequency, and sleepiness across demographic groups, revealing varying patterns that affect BMI differently.
+
+### Statistical Summary of Findings
+Correlation Analysis: The correlation matrix showed modest relationships between sleep duration and BMI, with longer sleep durations moderate associated with lower BMI. Snoring and daytime sleepiness followed similar trends.
+
+Regression Results: The regression analysis showed that sleep duration and snoring had associations with BMI. The model's Adjusted R-squared value indicates that other factors may play a more significant role in influencing BMI.
+
+Subgroup Analysis: Age and ethnicity moderately influenced the relationship between sleep patterns and BMI, The variations were borderline large enough to draw this conclusion.
+
+### Hypotheses Review
+Primary Null Hypothesis (H0): The hypothesis that no significant relationship exists between sleep patterns and BMI was rejected. While relationships were identified, they were moderate, suggesting more complex models may be required for a fuller understanding.
+
+Secondary Null Hypothesis (H0): The hypothesis that demographic factors do not influence the relationship between sleep and BMI was rejected. Age and ethnicity showed moderate influence.
+
+Primary Alternative Hypothesis (H1): The hypothesis that shorter sleep durations and poor sleep quality are associated with higher BMI was supported with weak to moderate associations.
+
+Secondary Alternative Hypothesis (H1): The hypothesis that demographic factors influence the relationship between sleep and BMI was supported. Age and ethnicity demonstrated moderating effects on sleep-BMI relationships, though further investigation is needed for deeper insights.
+
+### Conclusion
+The analysis demonstrates statistically significant relationships between sleep patterns and BMI, altough with weak to moderate associations. The models highlight important trends, such as correlations between BMI and both sleep duration and snoring frequency. Additionally, demographic factors like age and ethnicity appear to influence these relationships.
+
+### Next step:
+Strengthening the Findings
+However, stronger associations or confidence could be achieved by considering additional factors such as:
+
+Lifestyle Habits (diet, exercise, and stress levels)
+Mental Health Factors (anxiety, depression)
+Environmental Influences (sleep environment, work schedules)
+Genetic Predispositions
+Incorporating these factors in future research could provide a clearer and more comprehensive understanding of the relationships between sleep, demographic factors, and health outcomes like BMI.
